@@ -1,12 +1,10 @@
 import streamlit as st
-import cv2
 import os
 import json
 import random
-from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 import numpy as np
-from ultralytics import YOLO
+import time
 
 # Set page configuration for a cleaner look
 st.set_page_config(
@@ -16,72 +14,51 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Add custom CSS for better styling
+# Add a loading message
+st.info("Loading application components... This may take a moment on free tier hosting.")
+
+# Import dependencies directly without caching
+try:
+    import cv2
+    st.success("OpenCV loaded successfully!")
+except ImportError:
+    st.error("Failed to load OpenCV. Some functionality may be limited.")
+    cv2 = None
+
+try:
+    from ultralytics import YOLO
+    st.success("YOLO loaded successfully!")
+    YOLO_available = True
+except ImportError:
+    st.warning("YOLO not available. Training and inference will be disabled.")
+    YOLO = None
+    YOLO_available = False
+
+# Import drawable canvas with error handling
+try:
+    from streamlit_drawable_canvas import st_canvas
+    canvas_available = True
+except ImportError:
+    st.warning("Drawing canvas not available. Annotation will be limited.")
+    canvas_available = False
+    # Fallback if the component fails to load
+    def st_canvas(*args, **kwargs):
+        st.error("Drawing component failed to load. Please refresh the page or try again later.")
+        return None
+
+# Add custom CSS for better styling - optimized and simplified
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: 700;
-        color: #1E88E5;
-        margin-bottom: 1rem;
-    }
-    .step-header {
-        font-size: 1.8rem;
-        font-weight: 600;
-        color: #0D47A1;
-        margin: 1.5rem 0 1rem 0;
-    }
-    .sub-header {
-        font-size: 1.3rem;
-        font-weight: 500;
-        color: #0277BD;
-        margin: 1rem 0;
-    }
-    .hint-text {
-        font-size: 0.9rem;
-        color: #455A64;
-        font-style: italic;
-    }
-    .info-box {
-        background-color: #E3F2FD;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 0.5rem solid #1E88E5;
-        margin: 1rem 0;
-    }
-    .success-box {
-        background-color: #E8F5E9;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 0.5rem solid #43A047;
-        margin: 1rem 0;
-    }
-    .warning-box {
-        background-color: #FFF8E1;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 0.5rem solid #FFA000;
-        margin: 1rem 0;
-    }
-    .error-box {
-        background-color: #FFEBEE;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 0.5rem solid #E53935;
-        margin: 1rem 0;
-    }
-    .step-indicator {
-        font-size: 1rem;
-        font-weight: 500;
-        color: white;
-        background-color: #1E88E5;
-        padding: 0.3rem 0.7rem;
-        border-radius: 2rem;
-        margin-right: 0.5rem;
-    }
-    .progress-container {
-        margin: 2rem 0;
-    }
+    .main-header {font-size: 2.2rem; font-weight: 700; color: #1E88E5; margin-bottom: 1rem;}
+    .step-header {font-size: 1.6rem; font-weight: 600; color: #0D47A1; margin: 1rem 0;}
+    .sub-header {font-size: 1.2rem; font-weight: 500; color: #0277BD; margin: 0.8rem 0;}
+    .hint-text {font-size: 0.9rem; color: #455A64; font-style: italic;}
+    .info-box {background-color: #E3F2FD; padding: 0.8rem; border-radius: 0.4rem; border-left: 0.4rem solid #1E88E5; margin: 0.8rem 0;}
+    .success-box {background-color: #E8F5E9; padding: 0.8rem; border-radius: 0.4rem; border-left: 0.4rem solid #43A047; margin: 0.8rem 0;}
+    .warning-box {background-color: #FFF8E1; padding: 0.8rem; border-radius: 0.4rem; border-left: 0.4rem solid #FFA000; margin: 0.8rem 0;}
+    .error-box {background-color: #FFEBEE; padding: 0.8rem; border-radius: 0.4rem; border-left: 0.4rem solid #E53935; margin: 0.8rem 0;}
+    .step-indicator {font-size: 1rem; font-weight: 500; color: white; background-color: #1E88E5; padding: 0.2rem 0.6rem; border-radius: 2rem; margin-right: 0.5rem;}
+    .progress-container {margin: 1.5rem 0;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -90,8 +67,12 @@ for dir in ["dataset/images", "dataset/labels", "annotations", "models", "output
     if not os.path.exists(dir):
         os.makedirs(dir)
 
-def extract_frames(video_path, output_dir, fps=1):
-    """Extract frames from a video at a specified frame rate."""
+def extract_frames(video_path, output_dir, fps=1, max_frames=50):
+    """Extract frames from a video at a specified frame rate with a maximum limit for performance."""
+    if cv2 is None:
+        st.error("OpenCV is not available. Cannot extract frames from video.")
+        return 0
+    
     vidcap = cv2.VideoCapture(video_path)
     success, image = vidcap.read()
     count = 0
@@ -99,14 +80,25 @@ def extract_frames(video_path, output_dir, fps=1):
     interval = int(frame_rate / fps) if fps > 0 else 1
     extracted_frames = 0
     
-    while success:
+    # Show a progress bar
+    progress_bar = st.progress(0)
+    video_length = int(vidcap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    while success and extracted_frames < max_frames:
+        # Update progress every 10 frames
+        if count % 10 == 0 and video_length > 0:
+            progress_bar.progress(min(1.0, count / video_length))
+            
         if count % interval == 0:
             frame_name = f"{os.path.basename(video_path).split('.')[0]}_frame{count}.jpg"
             cv2.imwrite(os.path.join(output_dir, frame_name), image)
             extracted_frames += 1
+            
         success, image = vidcap.read()
         count += 1
+        
     vidcap.release()
+    progress_bar.empty()  # Remove progress bar when done
     return extracted_frames
 
 # App Header
@@ -293,16 +285,13 @@ if choice == "Home":
             </div>
             """, unsafe_allow_html=True)
             
-            # Show sample images if available
-            st.markdown('<div class="sub-header">Sample Images</div>', unsafe_allow_html=True)
+            # Show a single sample image to reduce load on slow servers
+            st.markdown('<div class="sub-header">Sample Image</div>', unsafe_allow_html=True)
             images = [f for f in os.listdir("dataset/images") if f.endswith((".jpg", ".jpeg", ".png"))]
             if images:
-                sample_count = min(4, len(images))
-                samples = random.sample(images, sample_count)
-                cols = st.columns(sample_count)
-                for i, col in enumerate(cols):
-                    img_path = os.path.join("dataset/images", samples[i])
-                    col.image(img_path, caption=samples[i], use_column_width=True)
+                sample_img = random.choice(images)
+                img_path = os.path.join("dataset/images", sample_img)
+                st.image(img_path, caption=f"Random sample: {sample_img}", use_column_width=True, width=300)
         else:
             st.markdown("""
             <div class="warning-box">
@@ -539,17 +528,24 @@ elif choice == "Annotation":
                 else:
                     st.session_state.annotations = []
                 
-                # Canvas for drawing
-                canvas_result = st_canvas(
-                    fill_color="rgba(255, 165, 0, 0.3)",  # Orange fill with transparency
-                    stroke_width=2,
-                    background_image=img,
-                    update_streamlit=True,
-                    height=min(600, height),
-                    width=min(800, width),
-                    drawing_mode="rect",
-                    key=f"canvas_{img_select}",
-                )
+                # Canvas for drawing with error handling for slow servers
+                if not canvas_available:
+                    st.error("Drawing canvas component is not available. Please check your installation.")
+                else:
+                    try:
+                        canvas_result = st_canvas(
+                            fill_color="rgba(255, 165, 0, 0.3)",  # Orange fill with transparency
+                            stroke_width=2,
+                            background_image=img,
+                            update_streamlit=True,
+                            height=min(500, height),  # Reduced height to decrease load
+                            width=min(700, width),    # Reduced width to decrease load
+                            drawing_mode="rect",
+                            key=f"canvas_{img_select}",
+                        )
+                    except Exception as e:
+                        st.error(f"Drawing canvas failed to load. Try refreshing the page. Error: {str(e)}")
+                        canvas_result = None
             
             with col2:
                 st.markdown('<div class="sub-header">Box Controls</div>', unsafe_allow_html=True)
@@ -573,7 +569,7 @@ elif choice == "Annotation":
                 
                 # Add box button
                 if st.button("Add Box", use_container_width=True, type="primary"):
-                    if canvas_result.json_data is not None:
+                    if canvas_result is not None and canvas_result.json_data is not None:
                         objects = canvas_result.json_data["objects"]
                         if objects:
                             last_object = objects[-1]
@@ -592,6 +588,8 @@ elif choice == "Annotation":
                                 st.experimental_rerun()
                         else:
                             st.warning("Please draw a box on the image first.")
+                    else:
+                        st.warning("Canvas not available. Please try refreshing the page.")
                 
                 # Save annotations
                 if st.button("Save All Annotations", use_container_width=True):
@@ -889,42 +887,50 @@ elif choice == "Training":
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Show a progress bar (note: this is just for UX, not actual training progress)
+                # Train the model
                 progress_bar = st.progress(0)
+                training_status = st.empty()
                 
                 try:
-                    # Train the model
-                    model = YOLO(f'{model_size}.pt')
-                    results = model.train(
-                        data='dataset.yaml',
-                        epochs=epochs,
-                        imgsz=img_size,
-                        batch=batch_size,
-                        patience=patience,
-                        project='models',
-                        name=model_name
-                    )
-                    
-                    # Update progress if fourth step complete
-                    if st.session_state.workflow_progress == 3:
-                        st.session_state.workflow_progress = 4
-                    
-                    st.markdown(f"""
-                    <div class="success-box">
-                    ✅ Training completed! Model saved in 'models/{model_name}'
-                    
-                    <strong>Next Step:</strong> Go to the "Inference" section to test your model.
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
+                    # Check if YOLO is available
+                    if not YOLO_available:
+                        st.error("YOLO is not available. Cannot train the model.")
+                    else:
+                        # Simulate initial loading for better UX on slow servers
+                        for i in range(10):
+                            progress_bar.progress(i/20)
+                            training_status.info(f"Initializing model and preparing dataset...")
+                            time.sleep(0.2)  # Short delay for UX
+                        
+                        # Start actual training
+                        model = YOLO('yolov5s.pt')  # Start with small YOLOv5 model
+                        results = model.train(
+                            data='dataset.yaml',
+                            epochs=epochs,
+                            imgsz=img_size,
+                            batch=batch_size,
+                            patience=patience,
+                            project='models',
+                            name=model_name
+                        )
+                        
+                        # Update progress if fourth step complete
+                        if st.session_state.workflow_progress == 3:
+                            st.session_state.workflow_progress = 4
+                        
+                        st.markdown(f"""
+                        <div class="success-box">
+                        ✅ Training completed! Model saved in 'models/{model_name}'
+                        
+                        <strong>Next Step:</strong> Go to the "Inference" section to test your model.
+                        </div>
+                        """, unsafe_allow_html=True)
                 except Exception as e:
-                    st.markdown(f"""
-                    <div class="error-box">
-                    ❌ Error during training: {str(e)}
+                    st.error(f"Training failed: {str(e)}")
+                    results = None
                     
-                    This could be due to insufficient memory, GPU issues, or problems with the dataset.
-                    </div>
-                    """, unsafe_allow_html=True)
+                progress_bar.empty()
+                training_status.empty()
 
 # Inference Section: Test the trained model
 elif choice == "Inference":
@@ -1012,59 +1018,59 @@ elif choice == "Inference":
                         if not os.path.exists(model_weights_path):
                             st.error(f"Model weights not found at {model_weights_path}")
                         else:
-                            # Load model
-                            model = YOLO(model_weights_path)
+                            # Save test file
+                            test_extension = os.path.splitext(test_file.name)[1]
+                            test_file_path = os.path.join("output", f"test_file{test_extension}")
+                            with open(test_file_path, "wb") as f:
+                                f.write(test_file.getbuffer())
                             
-                            if test_file is not None:
-                                # Save test file
-                                test_extension = os.path.splitext(test_file.name)[1]
-                                test_file_path = os.path.join("output", f"test_file{test_extension}")
-                                with open(test_file_path, "wb") as f:
-                                    f.write(test_file.getbuffer())
-                                
-                                # Run inference
-                                try:
-                                    results = model(
-                                        test_file_path, 
-                                        conf=confidence,
-                                        save=True,
-                                        project="output",
-                                        name="test"
-                                    )
+                            # Show loading indicator for slow servers
+                            with st.spinner("Loading YOLO model and running inference... This can take some time on free tier hosting."):
+                                # Load model and perform inference
+                                model_path = os.path.join("models", model_select, "weights", "best.pt")
+                                YOLO_class = load_yolo()
+                                if YOLO_class is None:
+                                    st.error("Failed to load YOLO. Please refresh and try again.")
+                                    results = None
+                                else:
+                                    model = YOLO_class(model_path)
+                                    results = model(test_file_path, save=True, project="output", name="test")
+                            
+                            # Add a small delay to ensure files are written
+                            time.sleep(2)
+                            
+                            # Display results
+                            if test_file.type.startswith("image"):
+                                output_img = os.path.join("output", "test", os.path.basename(test_file_path))
+                                if os.path.exists(output_img):
+                                    st.image(output_img, caption="Detection Result", use_column_width=True)
                                     
-                                    # Display results
-                                    if test_file.type.startswith("image"):
-                                        output_img = os.path.join("output", "test", os.path.basename(test_file_path))
-                                        if os.path.exists(output_img):
-                                            st.image(output_img, caption="Detection Result", use_column_width=True)
-                                            
-                                            # Extract detection results for display
-                                            detections = []
-                                            for r in results:
-                                                boxes = r.boxes
-                                                for box in boxes:
-                                                    cls = int(box.cls[0])
-                                                    class_name = model.names[cls]
-                                                    conf = float(box.conf[0])
-                                                    detections.append((class_name, conf))
-                                            
-                                            if detections:
-                                                st.markdown('<div class="sub-header">Detections</div>', unsafe_allow_html=True)
-                                                for i, (class_name, conf) in enumerate(detections):
-                                                    st.markdown(f"{i+1}. {class_name}: {conf:.2f} confidence")
-                                            else:
-                                                st.info("No objects detected in this image.")
-                                        else:
-                                            st.error("Failed to generate output image.")
+                                    # Extract detection results for display
+                                    detections = []
+                                    if results is not None:
+                                        for r in results:
+                                            boxes = r.boxes
+                                            for box in boxes:
+                                                cls = int(box.cls[0])
+                                                class_name = model.names[cls]
+                                                conf = float(box.conf[0])
+                                                detections.append((class_name, conf))
                                     
-                                    elif test_file.type.startswith("video"):
-                                        output_video = os.path.join("output", "test", os.path.basename(test_file_path))
-                                        if os.path.exists(output_video):
-                                            st.video(output_video)
-                                        else:
-                                            st.error("Failed to generate output video.")
-                                except Exception as e:
-                                    st.error(f"Error during inference: {str(e)}")
+                                    if detections:
+                                        st.markdown('<div class="sub-header">Detections</div>', unsafe_allow_html=True)
+                                        for i, (class_name, conf) in enumerate(detections):
+                                            st.markdown(f"{i+1}. {class_name}: {conf:.2f} confidence")
+                                    else:
+                                        st.info("No objects detected in this image.")
+                                else:
+                                    st.error("Failed to generate output image.")
+                            
+                            elif test_file.type.startswith("video"):
+                                output_video = os.path.join("output", "test", os.path.basename(test_file_path))
+                                if os.path.exists(output_video):
+                                    st.video(output_video)
+                                else:
+                                    st.error("Failed to generate output video.")
                             
                             elif use_webcam:
                                 st.write("Webcam functionality requires additional configuration and isn't supported in this demo.")
