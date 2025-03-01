@@ -1,0 +1,57 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+.venv/
+env/
+*.env
+Pipfile
+Pipfile.lock
+
+# Jupyter Notebook checkpoints (if used)
+.ipynb_checkpoints/
+
+# Streamlit cache & logs
+.streamlit/
+logs/
+
+# Render, VSCode, and IDE settings
+*.swp
+*.swo
+.vscode/
+.idea/
+.DS_Store
+
+# Large dataset files (images, videos, models)
+dataset/images/
+dataset/labels/
+annotations/
+models/
+output/
+
+# Temporary files
+temp_video.mp4
+*.log
+*.tmp
+
+# Python package installations
+*.egg-info/
+build/
+dist/
+
+# YOLO training artifacts
+*.pt
+runs/
+yolo_model/
+
+# Ignore any saved training runs
+train_results/
+val_results/
+
+# Ignore large test files
+test/
+output/
