@@ -1,0 +1,4 @@
+train: dataset/train.txt
+val: dataset/val.txt
+nc: 10
+names: ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
